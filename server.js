@@ -14,7 +14,7 @@ const HEADLESS = process.env.HEADLESS !== 'false';
 const PUBLIC_DIR = path.join(__dirname, 'public');
 const PROFILE_DIR = path.join(__dirname, '.browser-profile');
 const UPLOAD_DIR = path.join(__dirname, 'uploads');
-const BROWSER_VIEWPORT = { width: 1515, height: 851 };
+const BROWSER_VIEWPORT = { width: 1920, height: 1080 };
 
 const MAX_UPLOAD_SIZE = 25 * 1024 * 1024;
 const MAX_UPLOAD_FILES = 10;
@@ -556,24 +556,15 @@ function broadcast(session, value) {
   }
 }
 
-async function createBrowserSession(target) {
-  const context = await getBrowserContext();
-  const page = await context.newPage();
-  const cdp = await context.newCDPSession(page);
-  const id = crypto.randomUUID();
+async function attachBrowserPage(session, page, id) {
+  const cdp = await session.context.newCDPSession(page);
+  session.page = page;
+  session.cdp = cdp;
 
-  const session = {
-    context,
-    page,
-    cdp,
-    clients: new Set(),
-    pendingFileChooser: null,
-    uploadedFiles: []
-  };
-
-  sessions.set(id, session);
-
-  await context.grantPermissions(['microphone']);
+  page.on('popup', async (popup) => {
+    await attachBrowserPage(session, popup, id);
+    await page.close().catch(() => null);
+  });
 
   page.on('filechooser', (fileChooser) => {
     session.pendingFileChooser = fileChooser;
@@ -581,6 +572,10 @@ async function createBrowserSession(target) {
   });
 
   page.on('close', () => {
+    if (session.page !== page) {
+      return;
+    }
+
     deleteTemporaryUploads(session.uploadedFiles);
     sessions.delete(id);
   });
@@ -605,7 +600,7 @@ async function createBrowserSession(target) {
 
   await cdp.send('Page.startScreencast', {
     format: 'jpeg',
-    quality: 65,
+    quality: 80,
     maxWidth: BROWSER_VIEWPORT.width,
     maxHeight: BROWSER_VIEWPORT.height,
     everyNthFrame: 1
@@ -621,6 +616,26 @@ async function createBrowserSession(target) {
       .send('Page.screencastFrameAck', { sessionId })
       .catch(() => null);
   });
+}
+
+async function createBrowserSession(target) {
+  const context = await getBrowserContext();
+  const page = await context.newPage();
+  const id = crypto.randomUUID();
+
+  const session = {
+    context,
+    page,
+    cdp: null,
+    clients: new Set(),
+    pendingFileChooser: null,
+    uploadedFiles: []
+  };
+
+  sessions.set(id, session);
+
+  await context.grantPermissions(['microphone']);
+  await attachBrowserPage(session, page, id);
 
   await page.goto(target.href, {
     waitUntil: 'commit',

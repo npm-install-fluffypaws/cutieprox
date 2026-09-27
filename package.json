@@ -5,7 +5,8 @@
   "description": "A local Playwright-backed browser relay",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "xvfb-run -a env HEADLESS=false node server.js",
+    "start:headless": "node server.js",
     "dev": "node --watch server.js"
   },
   "dependencies": {

@@ -8,7 +8,14 @@ A small, dependency-free web proxy that runs in Node and is controlled from a br
 npm start
 ```
 
-Then open <http://localhost:3000>.
+On Linux, `npm start` launches Chromium in headed mode inside a virtual display;
+Relay streams that browser to the page, so no desktop window is needed. Then
+open <http://localhost:3000>.
+
+For environments without `xvfb-run`, use `npm run start:headless`. Some sites
+may still reject automated browser sessions regardless of headless mode. Relay
+does not solve or skip Cloudflare challenges; when Cloudflare presents a human
+verification, complete it in the remote browser viewport.
 
 For sites with origin-bound authentication such as Xbox, open <http://localhost:3000/remote> (or select **Use real browser mode**). This uses a real Playwright Chromium session with its own cookies, JavaScript, redirects, and a live WebSocket viewport.
 
@@ -18,11 +25,10 @@ Set `PORT` to use another port:
 PORT=8080 npm start
 ```
 
-The browser is headless by default. To run headed Chromium inside this
-container, start it through the installed virtual display:
+To run headed Chromium manually, start it through a virtual display:
 
 ```bash
-xvfb-run -a env HEADLESS=false npm start
+xvfb-run -a env HEADLESS=false npm run start:headless
 ```
 
 The **Enable mic** control streams the local microphone into a PulseAudio
