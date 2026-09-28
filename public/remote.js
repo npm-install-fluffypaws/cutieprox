@@ -9,8 +9,6 @@ const microphoneButton = document.querySelector('#microphone');
 const stopMicrophoneButton = document.querySelector('#stop-microphone');
 const micStatus = document.querySelector('#mic-status');
 const micLevel = document.querySelector('#mic-level');
-const STREAM_PACKET_FRAME = 1;
-const STREAM_PACKET_AUDIO = 2;
 
 const canvas = screen;
 const context = canvas.getContext('2d');
@@ -49,19 +47,17 @@ async function renderLatestFrame() {
     while (latestFrameData) {
       const frameData = latestFrameData;
       latestFrameData = null;
-      let image;
+      const image = new Image();
 
-      try {
-        image = await createImageBitmap(frameData);
-      } catch {
-        continue;
-      }
+      await new Promise((resolve) => {
+        image.onload = resolve;
+        image.onerror = resolve;
+        image.src = `data:image/jpeg;base64,${frameData}`;
+      });
 
-      if (!latestFrameData) {
+      if (!latestFrameData && image.complete && image.naturalWidth > 0) {
         context.drawImage(image, 0, 0, canvas.width, canvas.height);
       }
-
-      image.close();
     }
   } finally {
     frameRenderInProgress = false;
@@ -396,21 +392,10 @@ async function openBrowser(url) {
     stream = new WebSocket(
       `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/stream/${sessionId}`
     );
-    stream.binaryType = 'arraybuffer';
 
     stream.addEventListener('message', (event) => {
-      if (event.data instanceof ArrayBuffer) {
-        const packetType = new Uint8Array(event.data, 0, 1)[0];
-        const payload = event.data.slice(1);
-
-        if (packetType === STREAM_PACKET_FRAME) {
-          latestFrameData = new Blob([payload], { type: 'image/jpeg' });
-          renderLatestFrame();
-        } else if (packetType === STREAM_PACKET_AUDIO) {
-          playRemoteAudio(new Blob([payload]))
-            .catch((error) => console.error(error));
-        }
-
+      if (typeof event.data !== 'string') {
+        playRemoteAudio(event.data).catch((error) => console.error(error));
         return;
       }
 
@@ -542,14 +527,11 @@ canvas.addEventListener('mouseup', (event) => {
   });
 });
 
-canvas.addEventListener('pointermove', (event) => {
-  const samples = event.getCoalescedEvents?.();
-  const latest = samples?.[samples.length - 1] || event;
-
+canvas.addEventListener('mousemove', (event) => {
   pendingMouseMove = {
     type: 'mouse',
     action: 'mouseMoved',
-    ...streamPoint(latest),
+    ...streamPoint(event),
     buttons: event.buttons
   };
 
