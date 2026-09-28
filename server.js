@@ -18,6 +18,9 @@ const BROWSER_VIEWPORT = { width: 1920, height: 1080 };
 
 const MAX_UPLOAD_SIZE = 25 * 1024 * 1024;
 const MAX_UPLOAD_FILES = 10;
+const STREAM_PACKET_FRAME = 1;
+const STREAM_PACKET_AUDIO = 2;
+const MAX_FRAME_BUFFERED_BYTES = 512 * 1024;
 
 const sessions = new Map();
 
@@ -198,11 +201,31 @@ function writeMicrophoneAudio(chunk) {
 }
 
 function broadcastAudio(chunk) {
+  const packet = Buffer.allocUnsafe(chunk.length + 1);
+  packet[0] = STREAM_PACKET_AUDIO;
+  chunk.copy(packet, 1);
+
   for (const session of sessions.values()) {
     for (const client of session.clients) {
       if (client.readyState === 1) {
-        client.send(chunk);
+        client.send(packet);
       }
+    }
+  }
+}
+
+function broadcastFrame(session, data) {
+  const frame = Buffer.from(data, 'base64');
+  const packet = Buffer.allocUnsafe(frame.length + 1);
+  packet[0] = STREAM_PACKET_FRAME;
+  frame.copy(packet, 1);
+
+  for (const client of session.clients) {
+    if (
+      client.readyState === 1 &&
+      client.bufferedAmount < MAX_FRAME_BUFFERED_BYTES
+    ) {
+      client.send(packet);
     }
   }
 }
@@ -607,10 +630,7 @@ async function attachBrowserPage(session, page, id) {
   });
 
   cdp.on('Page.screencastFrame', async ({ data, sessionId }) => {
-    broadcast(session, {
-      type: 'frame',
-      data
-    });
+    broadcastFrame(session, data);
 
     await cdp
       .send('Page.screencastFrameAck', { sessionId })
@@ -1235,15 +1255,20 @@ streamServer.on('connection', (socket, request, session) => {
         }
 
         const virtualKey = virtualKeyCode(event);
+        const isEnter = event.key === 'Enter';
 
         await session.cdp.send('Input.dispatchKeyEvent', {
-          type: keyDown ? 'rawKeyDown' : 'keyUp',
+          type: keyDown && isEnter ? 'keyDown' : keyDown ? 'rawKeyDown' : 'keyUp',
           key: String(event.key || ''),
           code: String(event.code || ''),
           windowsVirtualKeyCode: virtualKey,
           nativeVirtualKeyCode: virtualKey,
           location: Number(event.location || 0),
           modifiers,
+          ...(keyDown && isEnter ? {
+            text: '\r',
+            unmodifiedText: '\r'
+          } : {}),
           autoRepeat: Boolean(event.repeat)
         });
       }
