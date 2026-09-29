@@ -4,6 +4,7 @@ const state = document.querySelector('#state');
 const screen = document.querySelector('#screen');
 const empty = document.querySelector('#empty');
 const localFilePicker = document.querySelector('#local-file-picker');
+const lowDataButton = document.querySelector('#low-data');
 const soundButton = document.querySelector('#sound');
 const microphoneButton = document.querySelector('#microphone');
 const stopMicrophoneButton = document.querySelector('#stop-microphone');
@@ -12,6 +13,8 @@ const micLevel = document.querySelector('#mic-level');
 
 const canvas = screen;
 const context = canvas.getContext('2d');
+const STREAM_PACKET_FRAME = 1;
+const STREAM_PACKET_AUDIO = 2;
 
 let pendingUpload = false;
 let sessionId = null;
@@ -20,6 +23,7 @@ let viewport = { width: 1280, height: 800 };
 let stream = null;
 let audioContext = null;
 let soundEnabled = false;
+let lowDataMode = false;
 let microphoneStream = null;
 let microphoneContext = null;
 let microphoneAnalyser = null;
@@ -47,16 +51,27 @@ async function renderLatestFrame() {
     while (latestFrameData) {
       const frameData = latestFrameData;
       latestFrameData = null;
-      const image = new Image();
+      let image;
 
-      await new Promise((resolve) => {
-        image.onload = resolve;
-        image.onerror = resolve;
-        image.src = `data:image/jpeg;base64,${frameData}`;
-      });
+      if (typeof frameData === 'string') {
+        image = new Image();
 
-      if (!latestFrameData && image.complete && image.naturalWidth > 0) {
+        await new Promise((resolve) => {
+          image.onload = resolve;
+          image.onerror = resolve;
+          image.src = `data:image/jpeg;base64,${frameData}`;
+        });
+
+        if (!image.complete || image.naturalWidth === 0) {
+          continue;
+        }
+      } else {
+        image = await createImageBitmap(frameData).catch(() => null);
+      }
+
+      if (image) {
         context.drawImage(image, 0, 0, canvas.width, canvas.height);
+        image.close?.();
       }
     }
   } finally {
@@ -267,6 +282,29 @@ soundButton.addEventListener('click', async () => {
   playAlertTone();
 });
 
+lowDataButton.addEventListener('click', async () => {
+  if (!sessionId) {
+    return;
+  }
+
+  lowDataButton.disabled = true;
+
+  try {
+    const current = await api(`/api/session/${sessionId}/low-data`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled: !lowDataMode })
+    });
+
+    lowDataMode = current.lowDataMode;
+    lowDataButton.textContent = `Low data: ${lowDataMode ? 'on' : 'off'}`;
+    lowDataButton.setAttribute('aria-pressed', String(lowDataMode));
+  } catch (error) {
+    state.textContent = `Could not change stream mode: ${error.message}`;
+  } finally {
+    lowDataButton.disabled = false;
+  }
+});
+
 microphoneButton.addEventListener('click', async () => {
   try {
     micStatus.textContent = 'Requesting mic…';
@@ -358,6 +396,11 @@ async function refresh() {
     height: current.height
   };
 
+  lowDataMode = current.lowDataMode;
+  lowDataButton.disabled = false;
+  lowDataButton.textContent = `Low data: ${lowDataMode ? 'on' : 'off'}`;
+  lowDataButton.setAttribute('aria-pressed', String(lowDataMode));
+
   address.value = current.url;
   state.textContent = current.title || current.url;
 }
@@ -392,10 +435,21 @@ async function openBrowser(url) {
     stream = new WebSocket(
       `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/stream/${sessionId}`
     );
+    stream.binaryType = 'arraybuffer';
 
     stream.addEventListener('message', (event) => {
-      if (typeof event.data !== 'string') {
-        playRemoteAudio(event.data).catch((error) => console.error(error));
+      if (event.data instanceof ArrayBuffer) {
+        const packetType = new Uint8Array(event.data, 0, 1)[0];
+        const payload = event.data.slice(1);
+
+        if (packetType === STREAM_PACKET_FRAME) {
+          latestFrameData = new Blob([payload], { type: 'image/jpeg' });
+          renderLatestFrame();
+        } else if (packetType === STREAM_PACKET_AUDIO) {
+          playRemoteAudio(new Blob([payload]))
+            .catch((error) => console.error(error));
+        }
+
         return;
       }
 
@@ -575,6 +629,13 @@ function sendKeyEvent(event, action) {
     return;
   }
 
+  if (
+    (event.ctrlKey || event.metaKey) &&
+    event.key.toLowerCase() === 'v'
+  ) {
+    return;
+  }
+
   event.preventDefault();
 
   sendStreamEvent({
@@ -599,6 +660,24 @@ screen.addEventListener('keydown', (event) => {
 
 screen.addEventListener('keyup', (event) => {
   sendKeyEvent(event, 'keyUp');
+});
+
+document.addEventListener('paste', (event) => {
+  if (document.activeElement !== screen || !sessionId) {
+    return;
+  }
+
+  const text = event.clipboardData?.getData('text/plain');
+
+  if (!text) {
+    return;
+  }
+
+  event.preventDefault();
+  sendStreamEvent({
+    type: 'paste',
+    text
+  });
 });
 
 for (const [name, action] of [

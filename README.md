@@ -19,6 +19,11 @@ verification, complete it in the remote browser viewport.
 
 For sites with origin-bound authentication such as Xbox, open <http://localhost:3000/remote> (or select **Use real browser mode**). This uses a real Playwright Chromium session with its own cookies, JavaScript, redirects, and a live WebSocket viewport.
 
+In browser mode, turn on **Low data** to reduce the live viewport stream to
+960x540 JPEG frames at lower quality and one third of the normal frame rate.
+It also stops remote audio from being sent to that session. This reduces the
+streaming cost, but does not limit data fetched by the site itself.
+
 Set `PORT` to use another port:
 
 ```bash

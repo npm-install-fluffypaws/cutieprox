@@ -206,6 +206,10 @@ function broadcastAudio(chunk) {
   chunk.copy(packet, 1);
 
   for (const session of sessions.values()) {
+    if (session.lowDataMode) {
+      continue;
+    }
+
     for (const client of session.clients) {
       if (client.readyState === 1) {
         client.send(packet);
@@ -565,6 +569,7 @@ async function sessionState(session) {
   return {
     url: session.page.url(),
     title: await session.page.title().catch(() => ''),
+    lowDataMode: session.lowDataMode,
     ...BROWSER_VIEWPORT
   };
 }
@@ -621,20 +626,26 @@ async function attachBrowserPage(session, page, id) {
     }
   });
 
-  await cdp.send('Page.startScreencast', {
-    format: 'jpeg',
-    quality: 80,
-    maxWidth: BROWSER_VIEWPORT.width,
-    maxHeight: BROWSER_VIEWPORT.height,
-    everyNthFrame: 1
-  });
-
-  cdp.on('Page.screencastFrame', async ({ data, sessionId }) => {
+  session.cdp.on('Page.screencastFrame', async ({ data, sessionId }) => {
     broadcastFrame(session, data);
 
     await cdp
       .send('Page.screencastFrameAck', { sessionId })
       .catch(() => null);
+  });
+
+  await startScreencast(session);
+}
+
+async function startScreencast(session) {
+  const lowDataMode = session.lowDataMode;
+
+  await session.cdp.send('Page.startScreencast', {
+    format: 'jpeg',
+    quality: lowDataMode ? 45 : 80,
+    maxWidth: lowDataMode ? 960 : BROWSER_VIEWPORT.width,
+    maxHeight: lowDataMode ? 540 : BROWSER_VIEWPORT.height,
+    everyNthFrame: lowDataMode ? 3 : 1
   });
 }
 
@@ -647,6 +658,7 @@ async function createBrowserSession(target) {
     context,
     page,
     cdp: null,
+    lowDataMode: false,
     clients: new Set(),
     pendingFileChooser: null,
     uploadedFiles: []
@@ -705,6 +717,27 @@ async function handleBrowserApi(request, response, requestUrl) {
   }
 
   const body = await parseJson(request);
+
+  if (request.method === 'POST' && action === 'low-data') {
+    if (typeof body.enabled !== 'boolean') {
+      throw new Error('Low-data mode must be enabled or disabled.');
+    }
+
+    const previousMode = session.lowDataMode;
+
+    await session.cdp.send('Page.stopScreencast');
+    session.lowDataMode = body.enabled;
+
+    try {
+      await startScreencast(session);
+    } catch (error) {
+      session.lowDataMode = previousMode;
+      await startScreencast(session).catch(() => null);
+      throw error;
+    }
+
+    return sendJson(response, 200, await sessionState(session));
+  }
 
   if (request.method === 'POST' && action === 'navigate') {
     await session.page.goto(new URL(body.url).href, {
@@ -1213,6 +1246,14 @@ streamServer.on('connection', (socket, request, session) => {
           y: Number(event.y),
           deltaX: Number(event.deltaX),
           deltaY: Number(event.deltaY)
+        });
+
+        return;
+      }
+
+      if (event.type === 'paste') {
+        await session.cdp.send('Input.insertText', {
+          text: String(event.text || '')
         });
 
         return;
